@@ -27,6 +27,7 @@ An approval guard for pi: every `edit` / `write` file change and every non-allow
 - **Styled overlay dialog** — rounded border, centered overlay, semantic theme colors (danger in red, warnings in yellow), rendered with pi's TUI component system. Falls back to the built-in plain `confirm()` outside interactive TUI mode (e.g. RPC clients).
 - **Formatted commands** — command chains (`&&`, `||`, `;`) are split into numbered segments; long commands wrap with aligned continuation indents and overflow folding.
 - **Keyboard shortcuts** — `y` / `Enter` to approve (green), `n` / `Esc` / `q` / `Ctrl+C` to reject (red).
+- **Quote-aware parsing** — shell syntax inside quotes is treated as literal: `rg "A|B"` (regex alternation), `grep ">&"` (search pattern), and `awk '{print $1}'` never trigger false positives, while real redirections (`>`), command substitution (`$(...)`, even inside double quotes), and pipelines between unknown commands are still caught.
 - **Three-tier command classification** (default-deny):
 
   | Tier | Behavior | Examples |
@@ -34,6 +35,8 @@ An approval guard for pi: every `edit` / `write` file change and every non-allow
   | 🟢 Allow-listed | Runs silently | `ls`, `rg`, `cat`, `go build/test/run`, `make`, `kill`, `mkdir/cp/mv`, `git status/diff/add/commit/pull/rebase`, `glab mr list/view`, `curl` to `localhost` or GET-only |
   | 🔴 Danger-listed | Confirmed with a specific dialog | `rm` (any form), `git push` (incl. force), `git reset/clean/restore/checkout -- <path>/branch -D/stash drop`, `sudo`, `ssh/scp/rsync`, `curl -X POST/PUT/PATCH/DELETE` to non-local hosts, `glab` write actions |
   | ⚡ Unknown | Confirmed generically | anything not in either list, shell redirections (`>`), command substitution `$(...)` |
+
+  Also allow-listed as safe segments: `cd` / `pushd` / `popd` (navigation), `tee`, `obsidian`, and harmless stderr redirects (`2>&1`, `2>/dev/null`).
 
 #### Install
 

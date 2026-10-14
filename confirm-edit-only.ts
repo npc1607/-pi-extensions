@@ -12,6 +12,8 @@ import { matchesKey, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@ea
 
 /** Executables that always pass. Sub-command nuance is handled per command. */
 const PASS_EXECUTABLES = new Set([
+  // navigation
+  "cd", "pushd", "popd",
   // reading
   "cat", "bat", "ls", "lsd", "pwd", "rg", "grep", "find", "fd", "head", "tail", "wc",
   "stat", "file", "du", "df", "which", "type", "echo", "printf", "date", "jq", "yq",
@@ -219,6 +221,78 @@ type CommandVerdict =
   | { action: "confirm"; kind: ConfirmKind; title: string; label: string };
 
 /**
+ * Split a shell command into segments at operators (&&, ||, ;, |), but only
+ * when they are NOT inside quotes. A `|` inside an rg pattern like "A|B"
+ * is an alternation, not a pipe.
+ */
+function splitShellSegments(command: string): string[] {
+  const segments: string[] = [];
+  let current = "";
+  let quote: '"' | "'" | null = null;
+
+  for (let i = 0; i < command.length; i++) {
+    const ch = command[i];
+    if (quote) {
+      current += ch;
+      if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch;
+      current += ch;
+      continue;
+    }
+    const two = command.slice(i, i + 2);
+    if (two === "&&" || two === "||") {
+      segments.push(current);
+      current = "";
+      i++;
+      continue;
+    }
+    if (ch === ";" || ch === "|") {
+      segments.push(current);
+      current = "";
+      continue;
+    }
+    current += ch;
+  }
+  segments.push(current);
+  return segments.filter((s) => s.trim() !== "");
+}
+
+/**
+ * Quote-aware scan for shell metacharacters that can hide writes.
+ * - Outside quotes: $ ` < > are all dangerous.
+ * - Inside single quotes: nothing is interpreted.
+ * - Inside double quotes: < > are literal, but $ and ` still allow
+ *   command substitution ("$(rm -rf /)" is a real write).
+ */
+function containsDangerousShellChars(command: string): boolean {
+  let quote: "'" | '"' | null = null;
+  for (let i = 0; i < command.length; i++) {
+    const ch = command[i];
+    if (quote === "'") {
+      if (ch === "'") quote = null;
+      continue;
+    }
+    if (quote === '"') {
+      if (ch === '"') {
+        quote = null;
+      } else if (ch === "$" || ch === "`") {
+        return true;
+      }
+      continue;
+    }
+    if (ch === "'" || ch === '"') {
+      quote = ch;
+      continue;
+    }
+    if (ch === "$" || ch === "`" || ch === "<" || ch === ">") return true;
+  }
+  return false;
+}
+
+/**
  * Evaluate a full shell command (pipelines/chains included).
  * Any segment that requires confirmation triggers confirmation for the whole
  * command; the first such segment decides the dialog kind/title.
@@ -228,16 +302,16 @@ function evaluateCommand(command: string): CommandVerdict {
     .replace(/(^|\s)2>&1(\s|$)/g, " ")
     .replace(/(^|\s)2>\/dev\/null(\s|$)/g, " ")
     .replace(/(^|\s)1?>\/dev\/null(\s|$)/g, " ")
-    .replace(/(^|\s)>&\/dev\/null(\s|$)/g, " ");
+    .replace(/(^|\s)&>\/dev\/null(\s|$)/g, " ");
 
   // Redirections and command substitution always require confirmation.
-  if (/[$`<>]/.test(normalized)) {
+  // Quote-aware: a quoted `>` in a grep pattern is literal, not a redirect.
+  if (containsDangerousShellChars(normalized)) {
     return { action: "confirm", kind: "command", title: "Approve command?", label: "Command (redirection/substitution):" };
   }
 
   let verdict: CommandVerdict = { action: "allow" };
-  for (const segment of normalized.split(/&&|\|\||[;|]/)) {
-    if (segment.trim() === "") continue;
+  for (const segment of splitShellSegments(normalized)) {
     const v = classifySegment(segment);
     if (v.action === "confirm") {
       verdict = { action: "confirm", kind: v.kind, title: v.title, label: v.label };
@@ -249,8 +323,7 @@ function evaluateCommand(command: string): CommandVerdict {
 
 /** Split a shell command chain into readable segments (keep pipes joined). */
 function splitCommand(command: string): string[] {
-  return command
-    .split(/&&|\|\||;|\n/)
+  return splitShellSegments(command)
     .map((s) => s.trim())
     .filter((s) => s.length > 0);
 }
